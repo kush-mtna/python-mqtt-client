@@ -1,6 +1,7 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import asyncio
+from fastapi.responses import FileResponse
 
 app = FastAPI()
 
@@ -32,7 +33,7 @@ async def websocket_endpoint(websocket: WebSocket):
 @app.get("/")
 async def get_index():
     return FileResponse("index.html")
-    
+
 # Broadcast function
 async def broadcast(message: str):
     for client in clients:

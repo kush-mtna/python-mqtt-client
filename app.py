@@ -1,12 +1,14 @@
 import time
 import paho.mqtt.client as mqtt
 from sparkplug_b_pb2 import Payload
+import asyncio
 
 # Sparkplug settings
 GROUP_ID = "My MQTT Group"
 EDGE_NODE_ID = "Edge Node ed7c12"
 DEVICE_ID = "1234"  # Transmit Node Name
 TAG_NAME = "Node Control/Rebirth"
+latest_metrics = {}  # tag_name -> value
 
 # Build the topic
 DCMD_TOPIC = f"spBv1.0/{GROUP_ID}/{EDGE_NODE_ID}/NCMD"
@@ -51,14 +53,87 @@ def on_message(client, userdata, msg):
             print(f"⚠️ Metric {metric.name} has no value")
             continue
 
+        name = metric.name
         value = getattr(metric, value_field)
-        print(f"📈 {metric.name} = {value}")
+        latest_metrics[name] = value
 
+        print(f"📈 {name} = {value}")
 
+        # Send to WebSocket clients
+        try:
+            asyncio.run(broadcast(f"{name} = {value}"))
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(broadcast(f"{name} = {value}"))
+            loop.close()
 
 client = mqtt.Client(client_id="python-client")
 client.on_connect = on_connect
 client.on_message = on_message
 
 client.connect("host.docker.internal", 1884, 60)
-client.loop_forever()
+
+# --------------------------------------------------------------------
+# 🧩 Merged WebSocket server code (from websocket_server.py)
+# --------------------------------------------------------------------
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+import uvicorn
+import threading
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+clients = []
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    clients.append(websocket)
+    print("👤 WebSocket client connected")
+
+     # Send cached metrics immediately
+    for name, value in latest_metrics.items():
+        await websocket.send_text(f"{name} = {value}")
+
+    try:
+        while True:
+            await websocket.receive_text()  # Keep alive
+    except WebSocketDisconnect:
+        clients.remove(websocket)
+        print("❌ WebSocket client disconnected")
+
+@app.get("/")
+async def get_index():
+    return FileResponse("index.html")
+
+async def broadcast(message: str):
+    print(f"📤 Broadcasting: {message} to {len(clients)} clients")
+    for client in clients:
+        try:
+            await client.send_text(message)
+        except:
+            clients.remove(client)
+
+# --------------------------------------------------------------------
+# 🚀 Launch both WebSocket and MQTT in parallel
+# --------------------------------------------------------------------
+def start_web():
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+def start_mqtt():
+    client.loop_forever()
+
+if __name__ == "__main__":
+    threading.Thread(target=start_web).start()
+    time.sleep(1)  # Let web server boot
+    start_mqtt()
