@@ -5,7 +5,8 @@
     <ul id="log"></ul>
 
     <script>
-      const socket = new WebSocket("ws://localhost:8000/ws");
+      const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+      const socket = new WebSocket(`${protocol}://${window.location.host}/ws`);
       const log = document.getElementById("log");
 
       socket.onmessage = (event) => {

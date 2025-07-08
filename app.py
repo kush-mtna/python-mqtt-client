@@ -116,6 +116,17 @@ async def websocket_endpoint(websocket: WebSocket):
 async def get_index():
     return FileResponse("index.html")
 
+@app.get("/api/tags")
+def get_all_tag_names():
+    return list(latest_metrics.keys())
+
+@app.get("/api/tags/{tag_name}")
+def get_tag_value(tag_name: str):
+    if tag_name in latest_metrics:
+        return {"name": tag_name, "value": latest_metrics[tag_name]}
+    return {"error": f"Tag '{tag_name}' not found"}, 404
+
+
 async def broadcast(message: str):
     print(f"📤 Broadcasting: {message} to {len(clients)} clients")
     for client in clients:
