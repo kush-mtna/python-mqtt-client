@@ -2,6 +2,7 @@ import time
 import paho.mqtt.client as mqtt
 from sparkplug_b_pb2 import Payload
 import asyncio
+import os
 
 # Sparkplug settings
 GROUP_ID = "My MQTT Group"
@@ -44,8 +45,13 @@ def on_message(client, userdata, msg):
     elif "DBIRTH" in msg.topic:
         print("🚨 DBIRTH RECEIVED")
 
-    payload = Payload()
-    payload.ParseFromString(msg.payload)
+    try:
+        payload = Payload()
+        payload.ParseFromString(msg.payload)
+    except Exception as e:
+        print(f"❌ Failed to parse Sparkplug payload from topic {msg.topic}")
+        print(f"   Error: {e}")
+        return
 
     for metric in payload.metrics:
         value_field = metric.WhichOneof("value")
@@ -67,15 +73,32 @@ def on_message(client, userdata, msg):
             asyncio.set_event_loop(loop)
             loop.run_until_complete(broadcast(f"{name} = {value}"))
             loop.close()
+        except Exception as e:
+            print(f"❌ Failed to broadcast metric {name}")
+            print(f"   Error: {e}")
+
+# --------------------------------------------------------------------
+# 🔧 Environment config and MQTT client setup
+# --------------------------------------------------------------------
+MQTT_HOST = os.getenv("MQTT_HOST", "host.docker.internal")
+MQTT_PORT = int(os.getenv("MQTT_PORT", "1884"))
+
+print(f"🔧 Using MQTT_HOST = {MQTT_HOST}")
+print(f"🔧 Using MQTT_PORT = {MQTT_PORT}")
 
 client = mqtt.Client(client_id="python-client")
 client.on_connect = on_connect
 client.on_message = on_message
 
-client.connect("host.docker.internal", 1884, 60)
+try:
+    client.connect(MQTT_HOST, MQTT_PORT, 60)
+    print("✅ MQTT connection attempted...")
+except Exception as e:
+    print(f"❌ Failed to connect to MQTT broker at {MQTT_HOST}:{MQTT_PORT}")
+    print(f"   Error: {e}")
 
 # --------------------------------------------------------------------
-# 🧩 Merged WebSocket server code (from websocket_server.py)
+# 🧩 WebSocket and REST API (FastAPI)
 # --------------------------------------------------------------------
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -101,7 +124,7 @@ async def websocket_endpoint(websocket: WebSocket):
     clients.append(websocket)
     print("👤 WebSocket client connected")
 
-     # Send cached metrics immediately
+    # Send cached metrics immediately
     for name, value in latest_metrics.items():
         await websocket.send_text(f"{name} = {value}")
 
@@ -126,23 +149,29 @@ def get_tag_value(tag_name: str):
         return {"name": tag_name, "value": latest_metrics[tag_name]}
     return {"error": f"Tag '{tag_name}' not found"}, 404
 
-
 async def broadcast(message: str):
     print(f"📤 Broadcasting: {message} to {len(clients)} clients")
-    for client in clients:
+    for client in clients[:]:
         try:
             await client.send_text(message)
-        except:
+        except Exception as e:
+            print(f"⚠️ Failed to send to client. Removing. Error: {e}")
             clients.remove(client)
 
 # --------------------------------------------------------------------
 # 🚀 Launch both WebSocket and MQTT in parallel
 # --------------------------------------------------------------------
 def start_web():
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    try:
+        uvicorn.run(app, host="0.0.0.0", port=8000)
+    except Exception as e:
+        print(f"❌ Web server failed to start: {e}")
 
 def start_mqtt():
-    client.loop_forever()
+    try:
+        client.loop_forever()
+    except Exception as e:
+        print(f"❌ MQTT loop crashed: {e}")
 
 if __name__ == "__main__":
     threading.Thread(target=start_web).start()
