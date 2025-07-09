@@ -4,15 +4,25 @@ from sparkplug_b_pb2 import Payload
 import asyncio
 import os
 
-# Sparkplug settings
-GROUP_ID = "My MQTT Group"
-EDGE_NODE_ID = "Edge Node ed7c12"
-DEVICE_ID = "1234"  # Transmit Node Name
-TAG_NAME = "Node Control/Rebirth"
+# --------------------------------------------------------------------
+# 🌐 Configurable Sparkplug settings via environment variables
+# --------------------------------------------------------------------
+GROUP_ID = os.getenv("GROUP_ID", "My MQTT Group")
+EDGE_NODE_ID = os.getenv("EDGE_NODE_ID", "Edge Node ed7c12")
+DEVICE_ID = os.getenv("DEVICE_ID", "1234")  # Optional if needed later
+
+print(f"🔧 GROUP_ID = {GROUP_ID}")
+print(f"🔧 EDGE_NODE_ID = {EDGE_NODE_ID}")
+print(f"🔧 DEVICE_ID = {DEVICE_ID}")
+
+# --------------------------------------------------------------------
+# 📊 Global state to hold the latest metrics
+# --------------------------------------------------------------------
 latest_metrics = {}  # tag_name -> value
 
 # Build the topic
-DCMD_TOPIC = f"spBv1.0/{GROUP_ID}/{EDGE_NODE_ID}/NCMD"
+NCMD_TOPIC = f"spBv1.0/{GROUP_ID}/NCMD/{EDGE_NODE_ID}"
+print(f"🔧 NCMD_TOPIC = {NCMD_TOPIC}")
 
 # Async queue to handle broadcasting between MQTT and WebSocket loop
 metric_queue = asyncio.Queue()
@@ -29,7 +39,7 @@ def send_trigger_rebirth_command(client):
     payload.timestamp = int(time.time() * 1000)
 
     encoded_payload = payload.SerializeToString()
-    client.publish("spBv1.0/My MQTT Group/NCMD/Edge Node ed7c12", encoded_payload, qos=0, retain=False)
+    client.publish(NCMD_TOPIC, encoded_payload, qos=0, retain=False)
     print("✅ Sent Node Control/Rebirth = True")
 
 def on_connect(client, userdata, flags, rc):
