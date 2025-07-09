@@ -1,0 +1,10 @@
+__pycache__/
+.venv/
+*.pyc
+*.pyo
+*.Zone.Identifier
+.DS_Store
+.git
+.vscode/
+.idea/
+*.swp

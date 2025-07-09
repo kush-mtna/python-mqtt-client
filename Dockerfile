@@ -1,15 +1,20 @@
-FROM python:3.12-slim
+# Use a slim Python image
+FROM python:3.11-slim
 
+# Set working directory
 WORKDIR /app
 
-# Copy code and install dependencies
-COPY . /app
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+# Copy only what's needed
+COPY app.py .
+COPY index.html .
+COPY requirements.txt .
+COPY sparkplug_b_pb2.py .
 
+# Install dependencies
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Expose FastAPI port
+# Expose the app port
 EXPOSE 8000
 
-# Run the app
+# Start the app
 CMD ["python", "app.py"]
