@@ -14,6 +14,9 @@ latest_metrics = {}  # tag_name -> value
 # Build the topic
 DCMD_TOPIC = f"spBv1.0/{GROUP_ID}/{EDGE_NODE_ID}/NCMD"
 
+# Async queue to handle broadcasting between MQTT and WebSocket loop
+metric_queue = asyncio.Queue()
+
 def send_trigger_rebirth_command(client):
     payload = Payload()
 
@@ -30,20 +33,20 @@ def send_trigger_rebirth_command(client):
     print("✅ Sent Node Control/Rebirth = True")
 
 def on_connect(client, userdata, flags, rc):
-    print("Connected with result code", rc)
+    print("✅ MQTT connected with result code:", rc)
     client.subscribe("spBv1.0/#", qos=0)
-    print("📡 Subscribed to spBv1.0/#")
+    print("📡 Subscribed to topic: spBv1.0/#")
 
     time.sleep(1.5)  # Give some time for subscriptions
     send_trigger_rebirth_command(client)
 
 def on_message(client, userdata, msg):
-    print(f"🔥 Sparkplug message received! Topic: {msg.topic}")
+    print(f"🔥 MQTT message received: {msg.topic}")
 
     if "NBIRTH" in msg.topic:
-        print("🚨 NBIRTH RECEIVED")
+        print("🚨 NBIRTH message detected")
     elif "DBIRTH" in msg.topic:
-        print("🚨 DBIRTH RECEIVED")
+        print("🚨 DBIRTH message detected")
 
     try:
         payload = Payload()
@@ -65,17 +68,10 @@ def on_message(client, userdata, msg):
 
         print(f"📈 {name} = {value}")
 
-        # Send to WebSocket clients
         try:
-            asyncio.run(broadcast(f"{name} = {value}"))
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(broadcast(f"{name} = {value}"))
-            loop.close()
+            metric_queue.put_nowait(f"{name} = {value}")
         except Exception as e:
-            print(f"❌ Failed to broadcast metric {name}")
-            print(f"   Error: {e}")
+            print(f"❌ Failed to enqueue metric: {e}")
 
 # --------------------------------------------------------------------
 # 🔧 Environment config and MQTT client setup
@@ -126,7 +122,10 @@ async def websocket_endpoint(websocket: WebSocket):
 
     # Send cached metrics immediately
     for name, value in latest_metrics.items():
-        await websocket.send_text(f"{name} = {value}")
+        try:
+            await websocket.send_text(f"{name} = {value}")
+        except Exception as e:
+            print(f"❌ Failed to send initial metric to WebSocket: {e}")
 
     try:
         while True:
@@ -134,6 +133,8 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         clients.remove(websocket)
         print("❌ WebSocket client disconnected")
+    except Exception as e:
+        print(f"❌ Unexpected WebSocket error: {e}")
 
 @app.get("/")
 async def get_index():
@@ -149,25 +150,42 @@ def get_tag_value(tag_name: str):
         return {"name": tag_name, "value": latest_metrics[tag_name]}
     return {"error": f"Tag '{tag_name}' not found"}, 404
 
-async def broadcast(message: str):
-    print(f"📤 Broadcasting: {message} to {len(clients)} clients")
-    for client in clients[:]:
-        try:
-            await client.send_text(message)
-        except Exception as e:
-            print(f"⚠️ Failed to send to client. Removing. Error: {e}")
-            clients.remove(client)
+# --------------------------------------------------------------------
+# 📤 Metric broadcasting task (runs inside async loop)
+# --------------------------------------------------------------------
+async def metric_broadcaster():
+    print("🚀 Metric broadcaster started")
+    while True:
+        message = await metric_queue.get()
+        print(f"📤 Broadcasting from queue: {message} to {len(clients)} clients")
+        for client in clients[:]:  # Safe copy
+            try:
+                await client.send_text(message)
+            except Exception as e:
+                print(f"⚠️ Failed to send to client. Removing. Error: {e}")
+                clients.remove(client)
 
 # --------------------------------------------------------------------
 # 🚀 Launch both WebSocket and MQTT in parallel
 # --------------------------------------------------------------------
 def start_web():
+    print("🌐 Starting FastAPI WebSocket server...")
+    import uvicorn
+    config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
+    server = uvicorn.Server(config)
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    loop.create_task(metric_broadcaster())
+
     try:
-        uvicorn.run(app, host="0.0.0.0", port=8000)
+        loop.run_until_complete(server.serve())
     except Exception as e:
         print(f"❌ Web server failed to start: {e}")
 
 def start_mqtt():
+    print("📡 Starting MQTT loop...")
     try:
         client.loop_forever()
     except Exception as e:
