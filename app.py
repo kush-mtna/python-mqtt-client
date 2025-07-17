@@ -5,17 +5,6 @@ import asyncio
 import os
 
 # --------------------------------------------------------------------
-# 🌐 Configurable Sparkplug settings via environment variables
-# --------------------------------------------------------------------
-# GROUP_ID = os.getenv("GROUP_ID", "My MQTT Group")
-# EDGE_NODE_ID = os.getenv("EDGE_NODE_ID", "Edge Node ed7c12")
-# DEVICE_ID = os.getenv("DEVICE_ID", "1234")  # Optional if needed later
-
-# print(f"🔧 GROUP_ID = {Edge Nodes}")
-# print(f"🔧 EDGE_NODE_ID = {Injection-E3}")
-# print(f"🔧 DEVICE_ID = {DEVICE_ID}")
-
-# --------------------------------------------------------------------
 # 📊 Global state to hold the latest metrics
 # --------------------------------------------------------------------
 latest_metrics = {}  # tag_name -> value
@@ -25,14 +14,10 @@ latest_metrics = {}  # tag_name -> value
 # --------------------------------------------------------------------
 desired_metrics = ["oeePerformance", "oeeAvailability", "oeeQuality", "oee"]  # tag_name -> value
 
-# Build the topic
-NCMD_TOPIC = f"spBv1.0/Edge Nodes/NCMD/Injection-E3"
-print(f"🔧 NCMD_TOPIC = {NCMD_TOPIC}")
-
 # Async queue to handle broadcasting between MQTT and WebSocket loop
 metric_queue = asyncio.Queue()
 
-def send_trigger_rebirth_command(client):
+def send_trigger_node_rebirth_command(client):
     payload = Payload()
 
     metric = payload.metrics.add()
@@ -47,13 +32,27 @@ def send_trigger_rebirth_command(client):
     client.publish(NCMD_TOPIC, encoded_payload, qos=0, retain=False)
     print("✅ Sent Node Control/Rebirth = True")
 
+def send_trigger_device_rebirth_command(client):
+    payload = Payload()
+    metric = payload.metrics.add()
+    metric.name = "Device Control/Rebirth"
+    metric.timestamp = int(time.time() * 1000)
+    metric.datatype = 11  # BOOLEAN
+    metric.boolean_value = True
+    payload.timestamp = int(time.time() * 1000)
+    encoded_payload = payload.SerializeToString()
+    client.publish(DCMD_TOPIC, encoded_payload, qos=0, retain=False)
+    print("✅ Sent Device Control/Rebirth = True to IMM")
+
 def on_connect(client, userdata, flags, rc):
     print("✅ MQTT connected with result code:", rc)
     client.subscribe(SUBSCRIBE_TOPIC, qos=0)
     print(f"📡 Subscribed to topic: {SUBSCRIBE_TOPIC}")
 
     time.sleep(1.5)  # Give some time for subscriptions
-    send_trigger_rebirth_command(client)
+    send_trigger_node_rebirth_command(client)
+    time.sleep(0.5)
+    send_trigger_device_rebirth_command(client)
 
 def on_message(client, userdata, msg):
     print(f"🔥 MQTT message received: {msg.topic}")
@@ -62,6 +61,27 @@ def on_message(client, userdata, msg):
         print("🚨 NBIRTH message detected")
     elif "DBIRTH" in msg.topic:
         print("🚨 DBIRTH message detected")
+        # Only process DBIRTH for IMM device
+        if msg.topic.endswith("/DBIRTH/Injection-E3/IMM"):
+            try:
+                payload = Payload()
+                payload.ParseFromString(msg.payload)
+            except Exception as e:
+                print(f"❌ Failed to parse Sparkplug payload from topic {msg.topic}")
+                print(f"   Error: {e}")
+                return
+            print(f"🔍 Scanning DBIRTH metrics for MES/immOperatorInterface/")
+            for metric in payload.metrics:
+                if metric.name.startswith("MES/immOperatorInterface/"):
+                    clean_name = metric.name[len("MES/immOperatorInterface/"):]
+                    value_field = metric.WhichOneof("value")
+                    if value_field is None:
+                        print(f"⚠️ Metric {metric.name} has no value")
+                        continue
+                    value = getattr(metric, value_field)
+                    latest_metrics[clean_name] = value
+                    print(f"📈 [DBIRTH] {clean_name} = {value}")
+            return  # DBIRTH handled, skip rest
 
     try:
         payload = Payload()
@@ -109,8 +129,16 @@ if MQTT_USERNAME:
     print(f"🔧 Using MQTT_USERNAME = {MQTT_USERNAME}")
 
 # The topic to subscribe to
-SUBSCRIBE_TOPIC = "spBv1.0/Injection-E3/NDATA/MES"
+SUBSCRIBE_TOPIC = "spBv1.0/Injection-E3/#"  # Subscribe to all Sparkplug messages
 print(f"🔧 Subscribing to topic: {SUBSCRIBE_TOPIC}")
+
+# Node rebirth topic for MES
+NCMD_TOPIC = f"spBv1.0/Injection-E3/NCMD/MES"
+print(f"🔧 NCMD_TOPIC = {NCMD_TOPIC}")
+
+# Device rebirth topic for IMM device
+DCMD_TOPIC = "spBv1.0/Injection-E3/DCMD/IMM"
+print(f"🔧 DCMD_TOPIC = {DCMD_TOPIC}")
 
 client = mqtt.Client(client_id="python-client")
 if MQTT_USERNAME and MQTT_PASSWORD:
