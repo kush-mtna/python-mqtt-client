@@ -7,21 +7,26 @@ import os
 # --------------------------------------------------------------------
 # 🌐 Configurable Sparkplug settings via environment variables
 # --------------------------------------------------------------------
-GROUP_ID = os.getenv("GROUP_ID", "My MQTT Group")
-EDGE_NODE_ID = os.getenv("EDGE_NODE_ID", "Edge Node ed7c12")
-DEVICE_ID = os.getenv("DEVICE_ID", "1234")  # Optional if needed later
+# GROUP_ID = os.getenv("GROUP_ID", "My MQTT Group")
+# EDGE_NODE_ID = os.getenv("EDGE_NODE_ID", "Edge Node ed7c12")
+# DEVICE_ID = os.getenv("DEVICE_ID", "1234")  # Optional if needed later
 
-print(f"🔧 GROUP_ID = {GROUP_ID}")
-print(f"🔧 EDGE_NODE_ID = {EDGE_NODE_ID}")
-print(f"🔧 DEVICE_ID = {DEVICE_ID}")
+# print(f"🔧 GROUP_ID = {Edge Nodes}")
+# print(f"🔧 EDGE_NODE_ID = {Injection-E3}")
+# print(f"🔧 DEVICE_ID = {DEVICE_ID}")
 
 # --------------------------------------------------------------------
 # 📊 Global state to hold the latest metrics
 # --------------------------------------------------------------------
 latest_metrics = {}  # tag_name -> value
 
+# --------------------------------------------------------------------
+# 📊 Global state to hold the names of the metrics to be broadcast
+# --------------------------------------------------------------------
+desired_metrics = ["oeePerformance", "oeeAvailability", "oeeQuality", "oee"]  # tag_name -> value
+
 # Build the topic
-NCMD_TOPIC = f"spBv1.0/{GROUP_ID}/NCMD/{EDGE_NODE_ID}"
+NCMD_TOPIC = f"spBv1.0/Edge Nodes/NCMD/Injection-E3"
 print(f"🔧 NCMD_TOPIC = {NCMD_TOPIC}")
 
 # Async queue to handle broadcasting between MQTT and WebSocket loop
@@ -81,14 +86,14 @@ def on_message(client, userdata, msg):
         # Only broadcast immOperatorInterface metrics with inner name 'oee'
         if name == "immOperatorInterface" and value_field == "template_value":
             for inner_metric in metric.template_value.metrics:
-                if inner_metric.name == "oee":
+                if inner_metric.name in desired_metrics:
                     value_field = inner_metric.WhichOneof("value")
                     if value_field is not None:
                         oee_value = getattr(inner_metric, value_field)
                         try:
-                            metric_queue.put_nowait(f"immOperatorInterface/oee = {oee_value}")
+                            metric_queue.put_nowait(f"immOperatorInterface/{inner_metric.name} = {oee_value}")
                         except Exception as e:
-                            print(f"❌ Failed to enqueue oee metric: {e}")
+                            print(f"❌ Failed to enqueue oee metric {inner_metric.name}: {e}")
 
 # --------------------------------------------------------------------
 # 🌐 Configurable MQTT settings via environment variables
