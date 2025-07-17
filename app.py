@@ -44,8 +44,8 @@ def send_trigger_rebirth_command(client):
 
 def on_connect(client, userdata, flags, rc):
     print("✅ MQTT connected with result code:", rc)
-    client.subscribe("spBv1.0/#", qos=0)
-    print("📡 Subscribed to topic: spBv1.0/#")
+    client.subscribe(SUBSCRIBE_TOPIC, qos=0)
+    print(f"📡 Subscribed to topic: {SUBSCRIBE_TOPIC}")
 
     time.sleep(1.5)  # Give some time for subscriptions
     send_trigger_rebirth_command(client)
@@ -76,23 +76,40 @@ def on_message(client, userdata, msg):
         value = getattr(metric, value_field)
         latest_metrics[name] = value
 
-        print(f"📈 {name} = {value}")
+        # print(f"📈 {name} = {value}")
 
-        try:
-            metric_queue.put_nowait(f"{name} = {value}")
-        except Exception as e:
-            print(f"❌ Failed to enqueue metric: {e}")
+        # Only broadcast immOperatorInterface metrics with inner name 'oee'
+        if name == "immOperatorInterface" and value_field == "template_value":
+            for inner_metric in metric.template_value.metrics:
+                if inner_metric.name == "oee":
+                    value_field = inner_metric.WhichOneof("value")
+                    if value_field is not None:
+                        oee_value = getattr(inner_metric, value_field)
+                        try:
+                            metric_queue.put_nowait(f"immOperatorInterface/oee = {oee_value}")
+                        except Exception as e:
+                            print(f"❌ Failed to enqueue oee metric: {e}")
 
 # --------------------------------------------------------------------
-# 🔧 Environment config and MQTT client setup
+# 🌐 Configurable MQTT settings via environment variables
 # --------------------------------------------------------------------
-MQTT_HOST = os.getenv("MQTT_HOST", "host.docker.internal")
-MQTT_PORT = int(os.getenv("MQTT_PORT", "1884"))
+MQTT_HOST = os.getenv("MQTT_HOST", "10.2.25.11")
+MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
+MQTT_USERNAME = os.getenv("MQTT_USERNAME", "mes")
+MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "mes")
 
 print(f"🔧 Using MQTT_HOST = {MQTT_HOST}")
 print(f"🔧 Using MQTT_PORT = {MQTT_PORT}")
+if MQTT_USERNAME:
+    print(f"🔧 Using MQTT_USERNAME = {MQTT_USERNAME}")
+
+# The topic to subscribe to
+SUBSCRIBE_TOPIC = "spBv1.0/Injection-E3/NDATA/MES"
+print(f"🔧 Subscribing to topic: {SUBSCRIBE_TOPIC}")
 
 client = mqtt.Client(client_id="python-client")
+if MQTT_USERNAME and MQTT_PASSWORD:
+    client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
 client.on_connect = on_connect
 client.on_message = on_message
 
