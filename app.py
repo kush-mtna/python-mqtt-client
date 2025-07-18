@@ -9,15 +9,7 @@ import os
 # --------------------------------------------------------------------
 latest_metrics = {}  # tag_name -> value
 
-# --------------------------------------------------------------------
-# 📊 Global state to hold the names of the metrics to be broadcast
-# --------------------------------------------------------------------
-desired_metrics = ["oeePerformance", "oeeAvailability", "oeeQuality", "oee"]  # tag_name -> value
-
-# Async queue to handle broadcasting between MQTT and WebSocket loop
-metric_queue = asyncio.Queue()
-
-def send_trigger_node_rebirth_command(client):
+def send_trigger_node_rebirth_command(client, topic):
     payload = Payload()
 
     metric = payload.metrics.add()
@@ -29,10 +21,10 @@ def send_trigger_node_rebirth_command(client):
     payload.timestamp = int(time.time() * 1000)
 
     encoded_payload = payload.SerializeToString()
-    client.publish(NCMD_TOPIC, encoded_payload, qos=0, retain=False)
-    print("✅ Sent Node Control/Rebirth = True")
+    client.publish(topic, encoded_payload, qos=0, retain=False)
+    print(f"✅ Sent Node Control/Rebirth = True to {topic}")
 
-def send_trigger_device_rebirth_command(client):
+def send_trigger_device_rebirth_command(client, topic):
     payload = Payload()
     metric = payload.metrics.add()
     metric.name = "Device Control/Rebirth"
@@ -41,86 +33,78 @@ def send_trigger_device_rebirth_command(client):
     metric.boolean_value = True
     payload.timestamp = int(time.time() * 1000)
     encoded_payload = payload.SerializeToString()
-    client.publish(DCMD_TOPIC, encoded_payload, qos=0, retain=False)
-    print("✅ Sent Device Control/Rebirth = True to IMM")
+    client.publish(topic, encoded_payload, qos=0, retain=False)
+    print(f"✅ Sent Device Control/Rebirth = True to {topic}")
 
 def on_connect(client, userdata, flags, rc):
-    print("✅ MQTT connected with result code:", rc)
-    client.subscribe(SUBSCRIBE_TOPIC, qos=0)
-    print(f"📡 Subscribed to topic: {SUBSCRIBE_TOPIC}")
+    print("✅ MQTT connected with result code:", rc)    
+    for topic in SUBSCRIBE_TOPICS:
+        client.subscribe(topic, qos=0)
+        print(f"📡 Subscribed to topic: {topic}")
 
     time.sleep(1.5)  # Give some time for subscriptions
-    send_trigger_node_rebirth_command(client)
-    time.sleep(0.5)
-    send_trigger_device_rebirth_command(client)
+    for topic in NCMD_TOPICS:
+        send_trigger_node_rebirth_command(client, topic)
+    for topic in DCMD_TOPICS:
+        send_trigger_device_rebirth_command(client, topic)
 
 def on_message(client, userdata, msg):
     if msg.topic.endswith("RIO"):
         return
 
-    print(f"🔥 MQTT message received on topic: {msg.topic}")
+    # Extract device name from topic, e.g. spBv1.0/Injection-E3/DBIRTH/IMM
+    topic_parts = msg.topic.split("/")
+    device_name = None
+    if len(topic_parts) > 2:
+        device_name = topic_parts[1]  # e.g. 'Injection-E3'
 
     if "NBIRTH" in msg.topic:
         print(f"🚨 NBIRTH message detected, topic: {msg.topic}")
-        # Only process NBIRTH for MES device
-        if msg.topic.endswith("/Injection-E3/NBIRTH/MES"):
-            try:
-                payload = Payload()
-                payload.ParseFromString(msg.payload)
-            except Exception as e:
-                print(f"❌ Failed to parse Sparkplug payload from topic {msg.topic}")
-                print(f"   Error: {e}")
-                return
-            print(f"🔍 Scanning NBIRTH metrics for MES/immOperatorInterface/")
-            for metric in payload.metrics:
-                value_field = metric.WhichOneof("value")
-                if value_field is None:
-                    print(f"⚠️ Metric {metric.name} has no value")
-                    continue
-
-                name = metric.name
-                value = getattr(metric, value_field)
-
-                # Only broadcast immOperatorInterface metrics with inner name 'oee'
-                if name == "immOperatorInterface" and value_field == "template_value":
-                    for inner_metric in metric.template_value.metrics:
-                        if inner_metric.name in desired_metrics:
-                            value_field = inner_metric.WhichOneof("value")
-                            if value_field is not None:
-                                oee_value = getattr(inner_metric, value_field)
-                                try:
-                                    latest_metrics[inner_metric.name] = oee_value
-                                    metric_queue.put_nowait(f"{inner_metric.name} = {oee_value}")
-                                except Exception as e:
-                                    print(f"❌ Failed to enqueue oee metric {inner_metric.name}: {e}")
-
-
-                # value_field = metric.WhichOneof("value")
-                # if value_field == "template_value":
-                #     print(f"📦 Template metric: {metric.name}")
-                #     for inner_metric in metric.template_value.metrics:
-                #         inner_value_field = inner_metric.WhichOneof("value")
-                #         if inner_value_field is not None:
-                #             inner_value = getattr(inner_metric, inner_value_field)
-                #             print(f"  └─ {inner_metric.name} = {inner_value}")
-                #         else:
-                #             print(f"  └─ {inner_metric.name} has no value")
-                # # Existing logic for non-template metrics
-                # if metric.name.startswith("MES/immOperatorInterface/"):
-                #     latest_metrics[metric.name] = metric.value
-
-
-                    # clean_name = metric.name[len("MES/immOperatorInterface/"):]
-                    # value_field = metric.WhichOneof("value")
-                    # if value_field is None:
-                    #     print(f"⚠️ Metric {metric.name} has no value")
-                    #     continue
-                    # value = getattr(metric, value_field)
-                    # latest_metrics[clean_name] = value
-                    # print(f"📈 [NBIRTH] {clean_name} = {value}")
-            # return  # NBIRTH handled, skip rest
     elif "DBIRTH" in msg.topic:
-        print("🚨 DBIRTH message detected")
+        print("🚨 DBIRTH message detected, topic: {msg.topic}")
+    # else:
+    #     print(f"🔥 MQTT message received on topic: {msg.topic}")
+
+    try:
+        payload = Payload()
+        payload.ParseFromString(msg.payload)
+    except Exception as e:
+        print(f"❌ Failed to parse Sparkplug payload from topic {msg.topic}")
+        print(f"   Error: {e}")
+        return
+    for metric in payload.metrics:
+        value_field = metric.WhichOneof("value")
+        if value_field is None:
+            print(f"⚠️ Metric {metric.name} has no value")
+            continue
+
+        name = metric.name
+        value = getattr(metric, value_field)
+
+        # Only broadcast desired immOperatorInterface metrics
+        if name == "immOperatorInterface" and value_field == "template_value":
+            for inner_metric in metric.template_value.metrics:
+                if inner_metric.name in DESIRED_METRICS:
+                    print(f"🔥 Received desired immOperatorInterface metric: {inner_metric.name}")
+                    value_field = inner_metric.WhichOneof("value")
+                    if value_field is not None:
+                        desired_value = getattr(inner_metric, value_field)
+                        print(f" {inner_metric.name} = {desired_value}")
+                        try:
+                            if device_name:
+                                metric_key = f"{device_name}/{inner_metric.name}"
+                            else:
+                                metric_key = f"{unknown_device_name}/{inner_metric.name}"
+                            latest_metrics[metric_key] = desired_value
+                            broadcast_metric_update(metric_key, desired_value)
+                        except Exception as e:
+                            print(f"❌ Failed to broadcast oee metric {inner_metric.name}: {e}")
+                else:
+                    print(f"📈 Received undesired immOperatorInterface metric: {inner_metric.name}")
+    
+    # Use this to get IMM device metrics
+    # elif "DBIRTH" in msg.topic:
+    #     print("🚨 DBIRTH message detected")
         # # Only process DBIRTH for IMM device
         # if msg.topic.endswith("/Injection-E3/DBIRTH/IMM"):
         #     try:
@@ -144,36 +128,6 @@ def on_message(client, userdata, msg):
         #     print(f"📈 latest_metrics: {latest_metrics}")
         #     return  # DBIRTH handled, skip rest
 
-    try:
-        payload = Payload()
-        payload.ParseFromString(msg.payload)
-    except Exception as e:
-        print(f"❌ Failed to parse Sparkplug payload from topic {msg.topic}")
-        print(f"   Error: {e}")
-        return
-
-    for metric in payload.metrics:
-        value_field = metric.WhichOneof("value")
-        if value_field is None:
-            print(f"⚠️ Metric {metric.name} has no value")
-            continue
-
-        name = metric.name
-        value = getattr(metric, value_field)
-
-        # Only broadcast immOperatorInterface metrics with inner name 'oee'
-        if name == "immOperatorInterface" and value_field == "template_value":
-            for inner_metric in metric.template_value.metrics:
-                if inner_metric.name in desired_metrics:
-                    value_field = inner_metric.WhichOneof("value")
-                    if value_field is not None:
-                        oee_value = getattr(inner_metric, value_field)
-                        try:
-                            latest_metrics[inner_metric.name] = oee_value
-                            metric_queue.put_nowait(f"{inner_metric.name} = {oee_value}")
-                        except Exception as e:
-                            print(f"❌ Failed to enqueue oee metric {inner_metric.name}: {e}")
-
 # --------------------------------------------------------------------
 # 🌐 Configurable MQTT settings via environment variables
 # --------------------------------------------------------------------
@@ -187,17 +141,22 @@ print(f"🔧 Using MQTT_PORT = {MQTT_PORT}")
 if MQTT_USERNAME:
     print(f"🔧 Using MQTT_USERNAME = {MQTT_USERNAME}")
 
-# The topic to subscribe to
-SUBSCRIBE_TOPIC = "spBv1.0/Injection-E3/#"  # Subscribe to all Sparkplug messages
-print(f"🔧 Subscribing to topic: {SUBSCRIBE_TOPIC}")
+# --------------------------------------------------------------------
+# 📊 Global variables to hold the names of the metrics to be broadcast
+# --------------------------------------------------------------------
+DESIRED_METRICS = ["oeePerformance", "oeeAvailability", "oeeQuality", "oee"]
+MACHINES_TO_MONITOR = ["Injection-E3", "Injection-B1", "Injection-B2"]
+SUBSCRIBE_TOPICS = []
+NCMD_TOPICS = []
+DCMD_TOPICS = []
 
-# Node rebirth topic for MES
-NCMD_TOPIC = f"spBv1.0/Injection-E3/NCMD/MES"
-print(f"🔧 NCMD_TOPIC = {NCMD_TOPIC}")
+for machine in MACHINES_TO_MONITOR:
+    SUBSCRIBE_TOPICS.append(f"spBv1.0/{machine}/#")
+    NCMD_TOPICS.append(f"spBv1.0/{machine}/NCMD/MES")
+    DCMD_TOPICS.append(f"spBv1.0/{machine}/DCMD/IMM")
+    print(f"🔧 Subscribing to topics for {machine}")
 
-# Device rebirth topic for IMM device
-DCMD_TOPIC = "spBv1.0/Injection-E3/DCMD/IMM"
-print(f"🔧 DCMD_TOPIC = {DCMD_TOPIC}")
+
 
 client = mqtt.Client(client_id="python-client")
 if MQTT_USERNAME and MQTT_PASSWORD:
@@ -233,18 +192,27 @@ app.add_middleware(
 
 clients = []
 
+def broadcast_metric_update(name, value):
+    """Broadcast a metric update to all connected WebSocket clients."""
+    for ws_client in clients[:]:
+        try:
+            asyncio.run_coroutine_threadsafe(ws_client.send_text(f"{name} = {value}"), ws_client._loop)
+        except Exception as e:
+            print(f"❌ Failed to send metric {name} to WebSocket: {e}")
+            clients.remove(ws_client)
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     clients.append(websocket)
     print("👤 WebSocket client connected")
 
-    # Send cached metrics immediately
-    for name, value in latest_metrics.items():
-        try:
+    # Send all cached metrics immediately to this client only
+    try:
+        for name, value in latest_metrics.items():
             await websocket.send_text(f"{name} = {value}")
-        except Exception as e:
-            print(f"❌ Failed to send initial metric to WebSocket: {e}")
+    except Exception as e:
+        print(f"❌ Failed to send initial metrics to WebSocket: {e}")
 
     try:
         while True:
@@ -270,29 +238,6 @@ def get_tag_value(tag_name: str):
     return {"error": f"Tag '{tag_name}' not found"}, 404
 
 # --------------------------------------------------------------------
-# 📤 Metric broadcasting task (runs inside async loop)
-# --------------------------------------------------------------------
-async def metric_broadcaster():
-    print("🚀 Metric broadcaster started")
-    while True:
-        message = await metric_queue.get()
-        print(f"📤 Broadcasting from queue: {message} to {len(clients)} clients")
-        for client in clients[:]:  # Safe copy
-            try:
-                await client.send_text(message)
-            except Exception as e:
-                print(f"⚠️ Failed to send to client. Removing. Error: {e}")
-                clients.remove(client)
-        # Broadcast all current latest_metrics after each message
-        for name, value in latest_metrics.items():
-            for client in clients[:]:
-                try:
-                    await client.send_text(f"{name} = {value}")
-                except Exception as e:
-                    print(f"⚠️ Failed to send metric {name} to client. Removing. Error: {e}")
-                    clients.remove(client)
-
-# --------------------------------------------------------------------
 # 🚀 Launch both WebSocket and MQTT in parallel
 # --------------------------------------------------------------------
 def start_web():
@@ -303,8 +248,6 @@ def start_web():
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-
-    loop.create_task(metric_broadcaster())
 
     try:
         loop.run_until_complete(server.serve())
