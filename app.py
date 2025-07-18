@@ -3,6 +3,7 @@ import paho.mqtt.client as mqtt
 from sparkplug_b_pb2 import Payload
 import asyncio
 import os
+import queue
 
 # --------------------------------------------------------------------
 # 📊 Global state to hold the latest metrics
@@ -192,14 +193,29 @@ app.add_middleware(
 
 clients = []
 
+# --------------------------------------------------------------------
+# 📤 Thread-safe queue for metric updates
+# --------------------------------------------------------------------
+metric_update_queue = queue.Queue()
+
 def broadcast_metric_update(name, value):
-    """Broadcast a metric update to all connected WebSocket clients."""
-    for ws_client in clients[:]:
-        try:
-            asyncio.run_coroutine_threadsafe(ws_client.send_text(f"{name} = {value}"), ws_client._loop)
-        except Exception as e:
-            print(f"❌ Failed to send metric {name} to WebSocket: {e}")
-            clients.remove(ws_client)
+    """Enqueue a metric update to be broadcast to all WebSocket clients."""
+    metric_update_queue.put((name, value))
+
+async def metric_broadcaster():
+    """Background task to broadcast metric updates from the queue to all WebSocket clients."""
+    while True:
+        name, value = await asyncio.get_event_loop().run_in_executor(None, metric_update_queue.get)
+        for ws_client in clients[:]:
+            try:
+                await ws_client.send_text(f"{name} = {value}")
+            except Exception as e:
+                print(f"❌ Failed to send metric {name} to WebSocket: {e}")
+                clients.remove(ws_client)
+
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(metric_broadcaster())
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
