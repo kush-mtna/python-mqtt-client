@@ -55,14 +55,15 @@ def on_connect(client, userdata, flags, rc):
     send_trigger_device_rebirth_command(client)
 
 def on_message(client, userdata, msg):
-    print(f"🔥 MQTT message received: {msg.topic}")
+    if msg.topic.endswith("RIO"):
+        return
+
+    print(f"🔥 MQTT message received on topic: {msg.topic}")
 
     if "NBIRTH" in msg.topic:
-        print("🚨 NBIRTH message detected")
-    elif "DBIRTH" in msg.topic:
-        print("🚨 DBIRTH message detected")
-        # Only process DBIRTH for IMM device
-        if msg.topic.endswith("/DBIRTH/Injection-E3/IMM"):
+        print(f"🚨 NBIRTH message detected, topic: {msg.topic}")
+        # Only process NBIRTH for MES device
+        if msg.topic.endswith("/Injection-E3/NBIRTH/MES"):
             try:
                 payload = Payload()
                 payload.ParseFromString(msg.payload)
@@ -70,18 +71,78 @@ def on_message(client, userdata, msg):
                 print(f"❌ Failed to parse Sparkplug payload from topic {msg.topic}")
                 print(f"   Error: {e}")
                 return
-            print(f"🔍 Scanning DBIRTH metrics for MES/immOperatorInterface/")
+            print(f"🔍 Scanning NBIRTH metrics for MES/immOperatorInterface/")
             for metric in payload.metrics:
-                if metric.name.startswith("MES/immOperatorInterface/"):
-                    clean_name = metric.name[len("MES/immOperatorInterface/"):]
-                    value_field = metric.WhichOneof("value")
-                    if value_field is None:
-                        print(f"⚠️ Metric {metric.name} has no value")
-                        continue
-                    value = getattr(metric, value_field)
-                    latest_metrics[clean_name] = value
-                    print(f"📈 [DBIRTH] {clean_name} = {value}")
-            return  # DBIRTH handled, skip rest
+                value_field = metric.WhichOneof("value")
+                if value_field is None:
+                    print(f"⚠️ Metric {metric.name} has no value")
+                    continue
+
+                name = metric.name
+                value = getattr(metric, value_field)
+
+                # Only broadcast immOperatorInterface metrics with inner name 'oee'
+                if name == "immOperatorInterface" and value_field == "template_value":
+                    for inner_metric in metric.template_value.metrics:
+                        if inner_metric.name in desired_metrics:
+                            value_field = inner_metric.WhichOneof("value")
+                            if value_field is not None:
+                                oee_value = getattr(inner_metric, value_field)
+                                try:
+                                    latest_metrics[inner_metric.name] = oee_value
+                                    metric_queue.put_nowait(f"{inner_metric.name} = {oee_value}")
+                                except Exception as e:
+                                    print(f"❌ Failed to enqueue oee metric {inner_metric.name}: {e}")
+
+
+                # value_field = metric.WhichOneof("value")
+                # if value_field == "template_value":
+                #     print(f"📦 Template metric: {metric.name}")
+                #     for inner_metric in metric.template_value.metrics:
+                #         inner_value_field = inner_metric.WhichOneof("value")
+                #         if inner_value_field is not None:
+                #             inner_value = getattr(inner_metric, inner_value_field)
+                #             print(f"  └─ {inner_metric.name} = {inner_value}")
+                #         else:
+                #             print(f"  └─ {inner_metric.name} has no value")
+                # # Existing logic for non-template metrics
+                # if metric.name.startswith("MES/immOperatorInterface/"):
+                #     latest_metrics[metric.name] = metric.value
+
+
+                    # clean_name = metric.name[len("MES/immOperatorInterface/"):]
+                    # value_field = metric.WhichOneof("value")
+                    # if value_field is None:
+                    #     print(f"⚠️ Metric {metric.name} has no value")
+                    #     continue
+                    # value = getattr(metric, value_field)
+                    # latest_metrics[clean_name] = value
+                    # print(f"📈 [NBIRTH] {clean_name} = {value}")
+            # return  # NBIRTH handled, skip rest
+    elif "DBIRTH" in msg.topic:
+        print("🚨 DBIRTH message detected")
+        # # Only process DBIRTH for IMM device
+        # if msg.topic.endswith("/Injection-E3/DBIRTH/IMM"):
+        #     try:
+        #         payload = Payload()
+        #         payload.ParseFromString(msg.payload)
+        #     except Exception as e:
+        #         print(f"❌ Failed to parse Sparkplug payload from topic {msg.topic}")
+        #         print(f"   Error: {e}")
+        #         return
+        #     print(f"🔍 Scanning DBIRTH metrics for MES/immOperatorInterface/")
+        #     for metric in payload.metrics:
+        #         if metric.name.startswith("MES/immOperatorInterface/"):
+        #             clean_name = metric.name[len("MES/immOperatorInterface/"):]
+        #             value_field = metric.WhichOneof("value")
+        #             if value_field is None:
+        #                 print(f"⚠️ Metric {metric.name} has no value")
+        #                 continue
+        #             value = getattr(metric, value_field)
+        #             latest_metrics[clean_name] = value
+        #             print(f"📈 [DBIRTH] {clean_name} = {value}")
+        #     print(f"📈 latest_metrics: {latest_metrics}")
+        #     return  # DBIRTH handled, skip rest
 
     try:
         payload = Payload()
@@ -99,9 +160,6 @@ def on_message(client, userdata, msg):
 
         name = metric.name
         value = getattr(metric, value_field)
-        latest_metrics[name] = value
-
-        # print(f"📈 {name} = {value}")
 
         # Only broadcast immOperatorInterface metrics with inner name 'oee'
         if name == "immOperatorInterface" and value_field == "template_value":
@@ -111,7 +169,8 @@ def on_message(client, userdata, msg):
                     if value_field is not None:
                         oee_value = getattr(inner_metric, value_field)
                         try:
-                            metric_queue.put_nowait(f"immOperatorInterface/{inner_metric.name} = {oee_value}")
+                            latest_metrics[inner_metric.name] = oee_value
+                            metric_queue.put_nowait(f"{inner_metric.name} = {oee_value}")
                         except Exception as e:
                             print(f"❌ Failed to enqueue oee metric {inner_metric.name}: {e}")
 
@@ -224,6 +283,14 @@ async def metric_broadcaster():
             except Exception as e:
                 print(f"⚠️ Failed to send to client. Removing. Error: {e}")
                 clients.remove(client)
+        # Broadcast all current latest_metrics after each message
+        for name, value in latest_metrics.items():
+            for client in clients[:]:
+                try:
+                    await client.send_text(f"{name} = {value}")
+                except Exception as e:
+                    print(f"⚠️ Failed to send metric {name} to client. Removing. Error: {e}")
+                    clients.remove(client)
 
 # --------------------------------------------------------------------
 # 🚀 Launch both WebSocket and MQTT in parallel

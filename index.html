@@ -9,34 +9,11 @@
       const socket = new WebSocket(`${protocol}://${window.location.host}/ws`);
       const log = document.getElementById("log");
 
-      // List of metrics you care about
-      const desiredMetrics = [
-        "immOperatorInterface/oeePerformance",
-        "immOperatorInterface/oeeAvailability",
-        "immOperatorInterface/oeeQuality",
-        "immOperatorInterface/oee",
-      ];
-      const metrics = {};
-
-      function render() {
-        log.innerHTML = "";
-        for (const name of desiredMetrics) {
-          const value = metrics[name] !== undefined ? metrics[name] : "N/A";
-          const item = document.createElement("li");
-          item.textContent = `${name} = ${value}`;
-          log.appendChild(item);
-        }
-      }
-
       socket.onmessage = (event) => {
-        // Expecting messages like "oeeQuality = 99.5"
-        const [name, value] = event.data.split(" = ");
-        metrics[name] = value;
-        render();
+        const item = document.createElement("li");
+        item.textContent = event.data;
+        log.appendChild(item);
       };
-
-      // Optionally, render the list with N/A on first load
-      render();
     </script>
   </body>
 </html>
